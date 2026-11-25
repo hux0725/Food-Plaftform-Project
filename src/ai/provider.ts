@@ -1,62 +1,34 @@
+import { api } from '../api/client'
 import { localAssistant } from './local'
-import type { AssistantRequest, AssistantResponse } from './types'
+import type { AssistantPlace, AssistantRequest, AssistantResponse } from './types'
 
-/**
- * Online assistant endpoint. Leave unset to stay on the local fallback.
- * This module never reads an API key and never calls a paid model directly.
- */
-export const ASSISTANT_URL_ENV = 'VITE_FOOD_ASSISTANT_URL'
+const SOURCES = new Set(['llm', 'cache', 'local'])
 
-export async function askFoodAssistant(request: AssistantRequest): Promise<AssistantResponse> {
-  const endpoint = import.meta.env.VITE_FOOD_ASSISTANT_URL?.trim()
-  if (!endpoint) return localAssistant(request)
-
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify(request),
-    })
-    if (!response.ok) throw new Error(`Assistant responded ${response.status}`)
-    const payload: unknown = await response.json()
-    const parsed = normalizeRemote(payload, request)
-    return parsed
-  } catch {
-    const fallback = localAssistant(request)
-    return {
-      ...fallback,
-      error: 'The online assistant did not respond. These matches are from the on-device fallback.',
-    }
-  }
+function isValidResponse(body: unknown, known: Set<string>): body is AssistantResponse {
+  if (!body || typeof body !== 'object') return false
+  const value = body as Partial<AssistantResponse>
+  return (
+    typeof value.reply === 'string' &&
+    Array.isArray(value.rankedIds) &&
+    value.rankedIds.length <= 3 &&
+    value.rankedIds.every((id) => typeof id === 'string' && known.has(id)) &&
+    typeof value.reasons === 'object' &&
+    value.reasons !== null &&
+    typeof value.source === 'string' &&
+    SOURCES.has(value.source)
+  )
 }
 
-function normalizeRemote(payload: unknown, request: AssistantRequest): AssistantResponse {
-  if (!payload || typeof payload !== 'object') throw new Error('Assistant payload was empty')
-  const body = payload as Record<string, unknown>
-  if (typeof body.reply !== 'string' || !Array.isArray(body.rankedIds)) {
-    throw new Error('Assistant payload was missing reply or rankedIds')
+/**
+ * Asks the server (live model → demo cache → server-side matcher). On any failure, timeout or odd answer,
+ * the on-device matcher answers instead. It never throws and never returns an error for the UI to show.
+ */
+export async function askFoodAssistant(request: AssistantRequest, places: AssistantPlace[]): Promise<AssistantResponse> {
+  try {
+    const response = await api.askAssistant(request)
+    if (isValidResponse(response, new Set(places.map((place) => place.id)))) return response
+  } catch {
+    // Fall through to the on-device answer.
   }
-  const known = new Set(request.places.map((place) => place.id))
-  const rankedIds = body.rankedIds.filter((id): id is string => typeof id === 'string' && known.has(id)).slice(0, 3)
-  const reasons: Record<string, string> = {}
-  if (body.reasons && typeof body.reasons === 'object') {
-    for (const [id, reason] of Object.entries(body.reasons as Record<string, unknown>)) {
-      if (known.has(id) && typeof reason === 'string') reasons[id] = reason
-    }
-  }
-  const neighborhoods = new Set(request.places.map((place) => place.neighborhood))
-  const neighborhood = typeof body.neighborhood === 'string' && neighborhoods.has(body.neighborhood) ? body.neighborhood : null
-  return {
-    reply: body.reply,
-    preference: typeof body.preference === 'string' ? body.preference : null,
-    neighborhood,
-    maxTravelMinutes: typeof body.maxTravelMinutes === 'number' ? body.maxTravelMinutes : null,
-    maxBudget: typeof body.maxBudget === 'number' ? body.maxBudget : null,
-    rankedIds,
-    reasons,
-    source: 'remote',
-  }
+  return localAssistant(request, places)
 }

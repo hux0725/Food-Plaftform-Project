@@ -1,22 +1,20 @@
 /// <reference types="vite/client" />
 
-interface ImportMetaEnv {
-  readonly VITE_FOOD_ASSISTANT_URL?: string
-}
-
-interface ImportMeta {
-  readonly env: ImportMetaEnv
-}
-
 interface SpeechRecognitionEventLike {
   results: ArrayLike<ArrayLike<{ transcript: string }>>
 }
 
+interface SpeechRecognitionErrorEventLike {
+  error?: string
+}
+
 interface SpeechRecognitionLike {
   lang: string
+  interimResults?: boolean
   start: () => void
+  abort?: () => void
   onresult: ((event: SpeechRecognitionEventLike) => void) | null
-  onerror: (() => void) | null
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null
   onend: (() => void) | null
 }
 
